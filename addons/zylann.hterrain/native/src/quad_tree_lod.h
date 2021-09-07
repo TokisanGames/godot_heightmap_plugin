@@ -3,77 +3,77 @@
 
 #include <Godot.hpp>
 #include <FuncRef.hpp>
+#include <CanvasItem.hpp>
+
+#include <vector>
+
 
 namespace godot {
 
 class QuadTreeLod : public Reference {
     GODOT_CLASS(QuadTreeLod, Reference)
 
+    static const unsigned int NO_CHILDREN = -1;
+    static const unsigned int ROOT = -1;
+
     class Quad {
+
     private:
-        Quad **children = nullptr;
-        bool _has_children = false;
+        Variant _data;          // Type is Object: HTerrainChunk.gd
 
     public:
+        unsigned int first_child = NO_CHILDREN;
         int origin_x = 0;
         int origin_y = 0;
-        Variant data;          // Type is HTerrainChunk.gd
 
         Quad() {
-            //Always allocate memory for child container, but not children
-            children = new Quad* [4];
-            for (int i = 0; i < 4; i++)
-                children[i] = nullptr;
+            init();
         }
 
         ~Quad() {
-            clear_children();
-            delete[] children;
         }
 
-        void clear() {
-            clear_children();
-            data = Variant();
+        inline void init() {
+            first_child = NO_CHILDREN;
+            origin_x = 0;
+            origin_y = 0;
+            clear_data();
         }
 
-        void add_children() {
-            if (_has_children)
-                Godot::print("Error: Quad::add_children(): already has children");
-                return;
-
-            for (int i = 0; i < 4; i++)
-                children[i] = new Quad();
-            _has_children = true;
+        inline void clear_data() {
+            _data = Variant();
         }
 
-        void clear_children() {
-            if (_has_children) {
-                for (int i = 0; i < 4; i++) {
-                    delete children[i];
-                    children[i] = nullptr;
-                }
-            }
-            _has_children = false;
+        inline bool has_children() {
+            return first_child != NO_CHILDREN;
         }
 
-        bool has_children() {
-            return _has_children;
+        inline bool is_null() {
+            return _data.get_type() == Variant::NIL;
         }
 
-        Quad* get_child(int idx) {
-            return children[idx];
+        inline bool is_valid() {
+            return _data.get_type() != Variant::NIL;
         }
 
-        void set_child(int idx, Quad *child) {
-            children[idx] = child;
+        inline Variant get_data() {
+            return _data;
         }
+
+        inline void set_data(Variant p_data) {
+            _data = p_data;
+        }
+
     };
 
 private:
-    Quad *_tree;
+    Quad _root;
+    std::vector<Quad> _tree;
+    std::vector<unsigned int> _free_indices;
+
     int _max_depth = 0;
     int _base_size = 16;
-    real_t _split_scale = 2.0;
+    real_t _split_scale = 2.0f;
 
     Ref<FuncRef> _make_func;
     Ref<FuncRef> _recycle_func;
@@ -81,39 +81,44 @@ private:
 
 public:
 
-    QuadTreeLod();
-    ~QuadTreeLod();
+    QuadTreeLod() {}
+    ~QuadTreeLod() {}
+    void _init() {}
 
     static void _register_methods();
 
-    void _init();
-
     void set_callbacks(Ref<FuncRef> make_cb, Ref<FuncRef> recycle_cb, Ref<FuncRef> vbounds_cb);
-
-    void clear();
-
-    /*static*/ int compute_lod_count(int base_size, int full_size);
     int get_lod_count();
     int get_lod_factor(int lod);
-
-    void create_from_sizes(int base_size, int full_size);
-
+    int compute_lod_count(int base_size, int full_size);
     void set_split_scale(real_t p_split_scale);
     real_t get_split_scale();
-
+    void clear();
+    void create_from_sizes(int base_size, int full_size);
     void update(Vector3 view_pos);
-
-    void debug_draw_tree(Variant ci);   // CanvasItem
+    void debug_draw_tree(CanvasItem *ci);
 
 private:
+    inline Quad* _get_root() {
+        return &_root;
+    }
 
-    void _update(Quad *quad, int lod, Vector3 view_pos);
-    void _join_all_recursively(Quad *quad, int lod);
+    inline Quad* _get_node(unsigned int index) {
+        if (index == ROOT) {
+            return &_root;
+        } else {
+            return &_tree[index];
+        }
+    }
 
+    void _clear_children(unsigned int index);
+    unsigned int _allocate_children();
+    void _recycle_children(unsigned int i0);
     Variant _make_chunk(int lod, int origin_x, int origin_y);
-    void _recycle_chunk(Variant chunk, int origin_x, int origin_y, int lod); // Chunk:HTerrainChunk.gd
-
-    void _debug_draw_tree_recursive(Variant ci, Quad *quad, int lod_index, int child_index);
+    void _recycle_chunk(unsigned int quad_index, int lod);
+    void _join_all_recursively(unsigned int quad_index, int lod);
+    void _update(unsigned int quad_index, int lod, Vector3 view_pos);
+    void _debug_draw_tree_recursive(CanvasItem *ci, unsigned int quad_index, int lod_index, int child_index);
 
 }; // class QuadTreeLod
 

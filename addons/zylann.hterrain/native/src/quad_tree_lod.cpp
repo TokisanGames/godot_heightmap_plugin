@@ -2,53 +2,23 @@
 
 namespace godot {
 
-QuadTreeLod::QuadTreeLod() {
-	Godot::print("QuadTreeLod: GDNative starting up");
-    _tree = new Quad();
-}
-
-QuadTreeLod::~QuadTreeLod() {
-	Godot::print("QuadTreeLod: GDNative deleting QuadTreeLod");
-    delete _tree;
-}
-
 void QuadTreeLod::_register_methods() {
 	register_method("set_callbacks", &QuadTreeLod::set_callbacks);
-	register_method("clear", &QuadTreeLod::clear);
-	register_method("compute_lod_count", &QuadTreeLod::compute_lod_count);
 	register_method("get_lod_count", &QuadTreeLod::get_lod_count);
 	register_method("get_lod_factor", &QuadTreeLod::get_lod_factor);
-	register_method("create_from_sizes", &QuadTreeLod::create_from_sizes);
+	register_method("compute_lod_count", &QuadTreeLod::compute_lod_count);
 	register_method("set_split_scale", &QuadTreeLod::set_split_scale);
 	register_method("get_split_scale", &QuadTreeLod::get_split_scale);
+	register_method("clear", &QuadTreeLod::clear);
+	register_method("create_from_sizes", &QuadTreeLod::create_from_sizes);
 	register_method("update", &QuadTreeLod::update);
 	register_method("debug_draw_tree", &QuadTreeLod::debug_draw_tree);
 }
 
-void QuadTreeLod::_init() {
-    Godot::print("QuadTreeLod: _init()");
-}
-
 void QuadTreeLod::set_callbacks(Ref<FuncRef> make_cb, Ref<FuncRef> recycle_cb, Ref<FuncRef> vbounds_cb) {
-    Godot::print("set_callbacks: make_cb->get_function: " + make_cb->get_function());
 	_make_func = make_cb;
 	_recycle_func = recycle_cb;
 	_vertical_bounds_func = vbounds_cb;
-}
-
-void QuadTreeLod::clear() {
-	_join_all_recursively(_tree, _max_depth);
-	_max_depth = 0;
-	_base_size = 0;
-}
-
-int QuadTreeLod::compute_lod_count(int base_size, int full_size) {
-	int po = 0;
-	while (full_size > base_size) {
-		full_size = full_size >> 1;
-		po += 1;
-	}
-	return po;
 }
 
 int QuadTreeLod::get_lod_count() {
@@ -60,17 +30,20 @@ int QuadTreeLod::get_lod_factor(int lod) {
 	return 1 << lod;
 }
 
-void QuadTreeLod::create_from_sizes(int base_size, int full_size) {
-	clear();
-	_base_size = base_size;
-	_max_depth = compute_lod_count(base_size, full_size);
+int QuadTreeLod::compute_lod_count(int base_size, int full_size) {
+	int po = 0;
+	while (full_size > base_size) {
+		full_size = full_size >> 1;
+		po += 1;
+	}
+	return po;
 }
 
 // The higher, the longer LODs will spread and higher the quality.
 // The lower, the shorter LODs will spread and lower the quality.
 void QuadTreeLod::set_split_scale(real_t p_split_scale) {
-	real_t MIN = 2.0;
-	real_t MAX = 5.0;
+	real_t MIN = 2.0f;
+	real_t MAX = 5.0f;
 
 	// Split scale must be greater than a threshold,
 	// otherwise lods will decimate too fast and it will look messy
@@ -86,133 +59,186 @@ real_t QuadTreeLod::get_split_scale() {
 	return _split_scale;
 }
 
+// Intention is to only clear references to children
+void QuadTreeLod::_clear_children(unsigned int index) {
+    Quad* quad = _get_node(index);
+    if (quad->has_children()) {
+        _recycle_children(quad->first_child);
+        quad->first_child = NO_CHILDREN;
+    }
+}
+
+// Returns the index of the first_child. Allocates from _free_indices.
+unsigned int QuadTreeLod::_allocate_children() {
+    if (_free_indices.size() == 0) {
+        unsigned int i0 = static_cast<unsigned int>(_tree.size());
+        _tree.resize(i0 + 4);
+        return 4 * i0;
+    } else {
+        unsigned int i0 = _free_indices[_free_indices.size() - 1];
+        _free_indices.pop_back();
+        return 4 * i0;
+    }
+}
+
+// Pass the first_child index, not the parent index. Stores back in _free_indices.
+void QuadTreeLod::_recycle_children(unsigned int i0) {
+    // Debug check, there is no use case in recycling a node which is not a first child
+    CRASH_COND(i0 % 4 != 0);
+
+    for (int i = 0; i < 4; ++i) {
+        _tree[i0 + i].init();
+    }
+
+    _free_indices.push_back(i0 / 4);
+}
+
+Variant QuadTreeLod::_make_chunk(int lod, int origin_x, int origin_y) {
+    if (_make_func.is_valid()) {
+        return _make_func->call_func(origin_x, origin_y, lod);
+    } else {
+        return Variant();
+    }
+}
+
+void QuadTreeLod::_recycle_chunk(unsigned int quad_index, int lod) {
+    Quad* quad = _get_node(quad_index);
+    if (_recycle_func.is_valid()) {
+        _recycle_func->call_func(quad->get_data(), quad->origin_x, quad->origin_y, lod);
+    }
+}
+
+void QuadTreeLod::clear() {
+	_join_all_recursively(ROOT, _max_depth);
+	_max_depth = 0;
+	_base_size = 0;
+}
+
+void QuadTreeLod::_join_all_recursively(unsigned int quad_index, int lod) {
+    Quad* quad = _get_node(quad_index);
+
+    if (quad->has_children()) {
+        for (int i = 0; i < 4; i++) {
+            _join_all_recursively(quad->first_child + i, lod - 1);
+        }
+        _clear_children(quad_index);
+
+    } else if (quad->is_valid()) {
+        _recycle_chunk(quad_index, lod);
+        quad->clear_data();
+    }
+}
+
+void QuadTreeLod::create_from_sizes(int base_size, int full_size) {
+    clear();
+    _base_size = base_size;
+    _max_depth = compute_lod_count(base_size, full_size);
+
+    int node_count = static_cast<int>(pow(4, _max_depth) / (4 - 1)) - 1;    // # nodes is N^L / (N - 1). -1 for root, where N=num children, L=levels
+    _tree.resize(node_count);                               // e.g. (4^6 / 3 ) - 1 = 1364(.33) excluding root
+
+    _free_indices.resize((node_count / 4));                // 1364 / 4 = 341
+    for (int i = 0; i < _free_indices.size(); i++)          // i = 0 to 340, *4 = 0 to 1360
+        _free_indices[i] = i;                               // _tree[0*4 + i0] is first child, [340*4 + i3] is last
+}
+
 void QuadTreeLod::update(Vector3 view_pos) {
-	_update(_tree, _max_depth, view_pos);
+	_update(ROOT, _max_depth, view_pos);
 
 	// This makes sure we keep seeing the lowest LOD,
 	// if the tree is cleared while we are far away
-	if (! _tree->has_children() && _tree->data.get_type() == Variant::NIL)
-		_tree->data = _make_chunk(_max_depth, 0, 0);
+    Quad* root = _get_root();
+	if (! root->has_children() && root->is_null())
+		root->set_data(_make_chunk(_max_depth, 0, 0));
 }
 
-void QuadTreeLod::_update(Quad *quad, int lod, Vector3 view_pos) {
+void QuadTreeLod::_update(unsigned int quad_index, int lod, Vector3 view_pos) {
     // This function should be called regularly over frames.
 
+    Quad* quad = _get_node(quad_index);
     int lod_factor = get_lod_factor(lod);
     int chunk_size = _base_size * lod_factor;
-    Vector3 world_center = (real_t)chunk_size * (Vector3((real_t)quad->origin_x, 0, (real_t)quad->origin_y) + Vector3(0.5, 0, 0.5));
+    Vector3 world_center = static_cast<real_t>(chunk_size) * (Vector3(static_cast<real_t>(quad->origin_x), 0.f, static_cast<real_t>(quad->origin_y)) + Vector3(0.5f, 0.f, 0.5f));
 
     if (_vertical_bounds_func.is_valid()) {
-        Variant ret = _vertical_bounds_func->call_func(quad->origin_x, quad->origin_y, lod);
+        Variant result = _vertical_bounds_func->call_func(quad->origin_x, quad->origin_y, lod);
         Vector2 vbounds;
-        if (ret.get_type() == Variant::VECTOR2)
-            vbounds = (Vector2)ret;
+        if (result.get_type() == Variant::VECTOR2)
+            vbounds = static_cast<Vector2>(result);
         else
-            Godot::print("Error: QuadtreeLod::_update: _vertical_bounds_func did not return a vector2");
-        world_center.y = (vbounds.x + vbounds.y) / 2.0;
+            Godot::print("Error: QuadtreeLod::_update: _vertical_bounds_func did not return a Vector2.");
+        world_center.y = (vbounds.x + vbounds.y) / 2.0f;
     }
 
-    int split_distance = _base_size * lod_factor * _split_scale;
+    int split_distance = _base_size * lod_factor * static_cast<int>(_split_scale);
 
     if (! quad->has_children()) {
         if (lod > 0 && world_center.distance_to(view_pos) < split_distance) {
             // Split
-            quad->add_children();
+            quad->first_child = _allocate_children();
 
             for (int i = 0; i < 4; i++) {
-                Quad* child = new Quad();
+                Quad* child = _get_node(quad->first_child + i);
                 child->origin_x = quad->origin_x * 2 + (i & 1);
                 child->origin_y = quad->origin_y * 2 + ((i & 2) >> 1);
-                child->data = _make_chunk(lod - 1, child->origin_x, child->origin_y);
-                quad->set_child(i, child);
+                child->set_data(_make_chunk(lod - 1, child->origin_x, child->origin_y));
                 // If the quad needs to split more, we'll ask more recycling...
             }
 
-            if (quad->data.get_type() == Variant::OBJECT) {
-                _recycle_chunk(quad->data, quad->origin_x, quad->origin_y, lod);
-                quad->data = Variant();
+            if (quad->is_valid()) {
+                _recycle_chunk(quad_index, lod);
+                quad->clear_data();
             }
         }
     } else {
         bool no_split_child = true;
 
         for (int i = 0; i < 4; i++) {
-            _update(quad->get_child(i), lod - 1, view_pos);
-            if (quad->get_child(i)->has_children())
+            _update(quad->first_child + i, lod - 1, view_pos);
+
+            if (_get_node(quad->first_child + i)->has_children())
                 no_split_child = false;
         }
 
         if (no_split_child && world_center.distance_to(view_pos) > split_distance) {
             // Join
-            if (quad->has_children()) {
-                for (int i = 0; i < 4; i++) {
-                    Quad* child = quad->get_child(i);
-                    _recycle_chunk(child->data, child->origin_x, child->origin_y, lod - 1);
-                    quad->data = Variant();
-                }
-                quad->clear_children();
-
-                //assert(quad->data == null);
-                //if ( quad->data.is_valid() )    // Really necessary after it was just unrefed in quad?
-                	//Godot::print("QuadTreeLod error: quad->data is still valid");
-
-                quad->data = _make_chunk(lod, quad->origin_x, quad->origin_y);
+            for (int i = 0; i < 4; i++) {
+                _recycle_chunk(quad->first_child + i, lod - 1);
             }
+            _clear_children(quad_index);
+            quad->set_data(_make_chunk(lod, quad->origin_x, quad->origin_y));
         }
     }
 } // _update
 
-void QuadTreeLod::_join_all_recursively(Quad *quad, int lod) {
+void QuadTreeLod::debug_draw_tree(CanvasItem *ci) {
+    if (ci != nullptr)
+        _debug_draw_tree_recursive(ci, ROOT, _max_depth, 0);
+}
+
+void QuadTreeLod::_debug_draw_tree_recursive(CanvasItem *ci, unsigned int quad_index, int lod_index, int child_index) {
+    Quad* quad = _get_node(quad_index);
+
     if (quad->has_children()) {
+        int ch_index = quad->first_child;
         for (int i = 0; i < 4; i++) {
-            _join_all_recursively(quad->get_child(i), lod - 1);
-        }
-        quad->clear_children();
-
-    } else if (quad->data.get_type() == Variant::OBJECT) {
-        _recycle_chunk(quad->data, quad->origin_x, quad->origin_y, lod);
-        quad->data = Variant();
-    }
-}
-
-Variant QuadTreeLod::_make_chunk(int lod, int origin_x, int origin_y) {
-    if (_make_func.is_valid())
-        return _make_func->call_func(origin_x, origin_y, lod);
-    else
-        return Variant();
-}
-
-void QuadTreeLod::_recycle_chunk(Variant chunk, int origin_x, int origin_y, int lod) {
-    if (_recycle_func.is_valid())
-        _recycle_func->call_func(chunk, origin_x, origin_y, lod);
-}
-
-void QuadTreeLod::debug_draw_tree(Variant ci) {
-    if (ci.get_type() == Variant::OBJECT && ci.has_method("draw_rect"))
-        _debug_draw_tree_recursive(ci, _tree, _max_depth, 0);
-}
-
-void QuadTreeLod::_debug_draw_tree_recursive(Variant ci, Quad *quad, int lod_index, int child_index) {
-    if (quad->has_children()) {
-        for (int i = 0; i < 4; i++) {
-            _debug_draw_tree_recursive(ci, quad->get_child(i), lod_index - 1, i);
+            _debug_draw_tree_recursive(ci, ch_index + i, lod_index - 1, i);
         }
 
     } else {
-        int size = get_lod_factor(lod_index);
+        real_t size = static_cast<real_t>(get_lod_factor(lod_index));
         int checker = 0;
         if (child_index == 1 || child_index == 2)
             checker = 1;
 
         int chunk_indicator = 0;
-        if (quad->data.get_type() == Variant::OBJECT)
+        if (quad->is_valid())
             chunk_indicator = 1;
 
-        Variant rect2(Rect2( Vector2((real_t)quad->origin_x, (real_t)quad->origin_y) * (real_t)size, 
-                             Vector2((real_t)size, (real_t)size)));
-        Variant color(Color(1.0 - (real_t)lod_index * 0.2, 0.2 * (real_t)checker, (real_t)chunk_indicator, 1));
-        Variant *args[] = { &rect2, &color };
-        ci.call("draw_rect", (const Variant **)args, 2);
+        Rect2 rect2(Vector2(static_cast<real_t>(quad->origin_x), static_cast<real_t>(quad->origin_y)) * size,
+                    Vector2(size, size));
+        Color color(1.0f - static_cast<real_t>(lod_index) * 0.2f, 0.2f * static_cast<real_t>(checker), static_cast<real_t>(chunk_indicator), 1.0f);
+        ci->draw_rect(rect2, color);
     }
 }
 
