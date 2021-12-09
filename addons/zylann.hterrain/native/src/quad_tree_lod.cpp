@@ -135,7 +135,7 @@ void QuadTreeLod::create_from_sizes(int base_size, int full_size) {
     _max_depth = compute_lod_count(base_size, full_size);
 
     int node_count = static_cast<int>(pow(4, _max_depth) / (4 - 1)) - 1;    // # nodes is N^L / (N - 1). -1 for root, where N=num children, L=levels
-    _node_pool.reserve(node_count);                               // e.g. (4^6 / 3 ) - 1 = 1364(.33) excluding root
+    _node_pool.resize(node_count);                               // e.g. (4^6 / 3 ) - 1 = 1364(.33) excluding root
 
     _free_indices.resize((node_count / 4));                // 1364 / 4 = 341
     for (int i = 0; i < _free_indices.size(); i++)          // i = 0 to 340, *4 = 0 to 1360
