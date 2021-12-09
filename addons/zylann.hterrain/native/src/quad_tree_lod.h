@@ -68,7 +68,7 @@ class QuadTreeLod : public Reference {
 
 private:
     Quad _root;
-    std::vector<Quad> _tree;
+    std::vector<Quad> _node_pool;
     std::vector<unsigned int> _free_indices;
 
     int _max_depth = 0;
@@ -107,7 +107,7 @@ private:
         if (index == ROOT) {
             return &_root;
         } else {
-            return &_tree[index];
+            return &_node_pool[index];
         }
     }
 
